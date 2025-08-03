@@ -1,0 +1,85 @@
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  name: cd-pipeline
+spec:
+  params:
+    - name: repo-url
+      type: string
+    - name: branch
+      type: string
+      default: "main"
+    - name: app-name
+      type: string
+    - name: build-image
+      type: string
+  workspaces:
+    - name: output
+  tasks:
+    - name: cleanup
+      taskRef:
+        name: cleanup
+      workspaces:
+        - name: source
+          workspace: output
+    
+    - name: git-clone
+      taskRef:
+        name: git-clone
+      runAfter:
+        - cleanup
+      workspaces:
+        - name: output
+          workspace: output
+      params:
+        - name: url
+          value: $(params.repo-url)
+        - name: revision
+          value: $(params.branch)
+    
+    - name: flake8
+      taskRef:
+        name: flake8
+      runAfter:
+        - git-clone
+      workspaces:
+        - name: source
+          workspace: output
+      params:
+        - name: args
+          value: ["--max-line-length=120", "--ignore=E501"]
+    
+    - name: nose-tests
+      taskRef:
+        name: nose
+      runAfter:
+        - flake8
+      workspaces:
+        - name: source
+          workspace: output
+    
+    - name: build-image
+      taskSpec:
+        params:
+        - name: build-image
+          type: string
+        steps:
+        - name: build-step
+          image: registry.redhat.io/ubi8/ubi:latest
+          script: |
+            echo "Build completed for $(params.build-image)"
+      runAfter:
+        - nose-tests
+      params:
+        - name: build-image
+          value: $(params.build-image)
+    
+    - name: deploy-app
+      taskRef:
+        name: openshift-client
+      runAfter:
+        - build-image
+      params:
+        - name: SCRIPT
+          value: |
+            oc create deployment $(params.app-name) --image=quay.io/ibmgaragecloud/hello-world:latest --dry-run=client -o yaml | oc apply -f -
